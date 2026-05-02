@@ -17,7 +17,6 @@ const accountingRoutes = require('./routes/accountingRoutes');
 const cashRoutes = require('./routes/cashRoutes');
 
 
-
 const app = express();
 
 app.use(cors({
