@@ -14,6 +14,7 @@ const purchaseRoutes = require('./routes/purchaseRoutes');
 const expenseRoutes = require('./routes/expenseRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
 const accountingRoutes = require('./routes/accountingRoutes');
+const cashRoutes = require('./routes/cashRoutes');
 
 
 
@@ -41,6 +42,7 @@ app.use('/api/purchases', purchaseRoutes);
 app.use('/api/expenses', expenseRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/accounting', accountingRoutes);
+app.use('/api/cash', cashRoutes);
 
 const PORT = process.env.PORT || 5000;
 
