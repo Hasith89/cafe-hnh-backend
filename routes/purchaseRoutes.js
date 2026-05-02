@@ -1,15 +1,16 @@
 const express = require('express');
 const router = express.Router();
 
+const verifyToken = require('../middleware/authMiddleware');
+
 const {
     createPurchase,
-    getPurchases
+    getPurchases,
+    getPurchaseItems
 } = require('../controllers/purchaseController');
 
-const verifyToken = require('../middleware/authMiddleware');
-const allowRoles = require('../middleware/roleMiddleware');
-
-router.post('/', verifyToken, allowRoles('owner', 'admin'), createPurchase);
-router.get('/', verifyToken, allowRoles('owner', 'admin'), getPurchases);
+router.post('/', verifyToken, createPurchase);
+router.get('/', verifyToken, getPurchases);
+router.get('/:id/items', verifyToken, getPurchaseItems);
 
 module.exports = router;
