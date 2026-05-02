@@ -2,44 +2,60 @@ const db = require('../config/db');
 
 const getProducts = (req, res) => {
     const sql = `
-    SELECT products.*, categories.category_name
-    FROM products
-    LEFT JOIN categories ON products.category_id = categories.id
-    ORDER BY products.id DESC
-  `;
+        SELECT products.*, categories.category_name
+        FROM products
+        LEFT JOIN categories ON products.category_id = categories.id
+        ORDER BY products.id DESC
+    `;
 
     db.query(sql, (err, results) => {
-        if (err) return res.status(500).json({ message: 'DB error' });
+        if (err) {
+            console.error('Product load error:', err);
+            return res.status(500).json({ message: 'DB error' });
+        }
+
         res.json(results);
     });
 };
 
 const createProduct = (req, res) => {
-    const { product_name, category_id, selling_price } = req.body;
+    const { product_name, sku, category_id, selling_price } = req.body;
+
+    if (!product_name || !category_id || !selling_price) {
+        return res.status(400).json({ message: 'Required fields missing' });
+    }
 
     const sql = `
-    INSERT INTO products (product_name, category_id, selling_price)
-    VALUES (?, ?, ?)
-  `;
+        INSERT INTO products (product_name, sku, category_id, selling_price)
+        VALUES (?, ?, ?, ?)
+    `;
 
-    db.query(sql, [product_name, category_id, selling_price], (err) => {
-        if (err) return res.status(500).json({ message: 'Insert error' });
+    db.query(sql, [product_name, sku || null, category_id, selling_price], (err) => {
+        if (err) {
+            console.error('Product insert error:', err);
+            return res.status(500).json({ message: 'Insert error' });
+        }
+
         res.json({ message: 'Product added' });
     });
 };
 
 const updateProduct = (req, res) => {
     const { id } = req.params;
-    const { product_name, category_id, selling_price } = req.body;
+    const { product_name, sku, category_id, selling_price } = req.body;
 
     const sql = `
-    UPDATE products
-    SET product_name = ?, category_id = ?, selling_price = ?
-    WHERE id = ?
-  `;
+        UPDATE products
+        SET product_name = ?, sku = ?, category_id = ?, selling_price = ?
+        WHERE id = ?
+    `;
 
-    db.query(sql, [product_name, category_id, selling_price, id], (err) => {
-        if (err) return res.status(500).json({ message: 'Product update failed' });
+    db.query(sql, [product_name, sku || null, category_id, selling_price, id], (err) => {
+        if (err) {
+            console.error('Product update error:', err);
+            return res.status(500).json({ message: 'Product update failed' });
+        }
+
         res.json({ message: 'Product updated' });
     });
 };
