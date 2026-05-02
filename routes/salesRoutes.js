@@ -1,16 +1,16 @@
 const express = require('express');
 const router = express.Router();
 
+const verifyToken = require('../middleware/authMiddleware');
+
 const {
     createSale,
     getSalesReport,
-    getSaleDetails
+    getSaleItems
 } = require('../controllers/salesController');
-
-const verifyToken = require('../middleware/authMiddleware');
 
 router.post('/', verifyToken, createSale);
 router.get('/report', verifyToken, getSalesReport);
-router.get('/:id/items', verifyToken, getSaleDetails);
+router.get('/:id/items', verifyToken, getSaleItems);
 
 module.exports = router;
