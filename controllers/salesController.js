@@ -12,7 +12,7 @@ const createSale = (req, res) => {
 
     if (!branch_id) {
         return res.status(400).json({
-            message: 'Branch not assigned. Please login properly.'
+            message: 'Branch not assigned. Please login as cashier/admin assigned to an outlet.'
         });
     }
 
@@ -21,106 +21,175 @@ const createSale = (req, res) => {
     }
 
     const invoice_no = generateInvoice();
-
-    let total_amount = 0;
-    items.forEach(item => {
-        total_amount += Number(item.qty) * Number(item.unit_price);
-    });
+    const productIds = items.map(item => item.product_id);
 
     db.beginTransaction(err => {
-        if (err) return res.status(500).json({ message: 'Transaction error' });
+        if (err) {
+            console.error('Transaction start error:', err);
+            return res.status(500).json({ message: 'Transaction error' });
+        }
 
-        const saleSql = `
-            INSERT INTO sales (invoice_no, branch_id, cashier_id, total_amount, payment_method)
-            VALUES (?, ?, ?, ?, ?)
-        `;
-
+        // Get current product cost/buying price
         db.query(
-            saleSql,
-            [invoice_no, branch_id, cashier_id, total_amount, payment_method || 'cash'],
-            (err, result) => {
+            `SELECT id, buying_price FROM products WHERE id IN (?)`,
+            [productIds],
+            (err, products) => {
                 if (err) {
-                    console.error(err);
-                    return db.rollback(() =>
-                        res.status(500).json({ message: 'Sale insert failed' })
-                    );
+                    console.error('Product cost fetch error:', err);
+                    return db.rollback(() => {
+                        res.status(500).json({ message: 'Product cost fetch failed' });
+                    });
                 }
 
-                const sale_id = result.insertId;
+                let total_amount = 0;
 
-                const itemValues = items.map(item => [
-                    sale_id,
-                    item.product_id,
-                    item.qty,
-                    item.unit_price,
-                    Number(item.qty) * Number(item.unit_price)
-                ]);
+                const itemValues = items.map(item => {
+                    const product = products.find(p => Number(p.id) === Number(item.product_id));
+
+                    const qty = Number(item.qty);
+                    const unit_price = Number(item.unit_price);
+                    const cost_price = Number(product?.buying_price || 0);
+
+                    const line_total = qty * unit_price;
+                    const profit = (unit_price - cost_price) * qty;
+
+                    total_amount += line_total;
+
+                    return [
+                        item.product_id,
+                        qty,
+                        unit_price,
+                        cost_price,
+                        line_total,
+                        profit
+                    ];
+                });
+
+                const saleSql = `
+                    INSERT INTO sales 
+                    (invoice_no, branch_id, cashier_id, total_amount, payment_method)
+                    VALUES (?, ?, ?, ?, ?)
+                `;
 
                 db.query(
-                    `INSERT INTO sale_items (sale_id, product_id, qty, unit_price, line_total) VALUES ?`,
-                    [itemValues],
-                    (err) => {
+                    saleSql,
+                    [invoice_no, branch_id, cashier_id, total_amount, payment_method || 'cash'],
+                    (err, saleResult) => {
                         if (err) {
-                            console.error(err);
-                            return db.rollback(() =>
-                                res.status(500).json({ message: 'Items insert failed' })
-                            );
+                            console.error('Sale insert error:', err);
+                            return db.rollback(() => {
+                                res.status(500).json({ message: 'Sale insert failed' });
+                            });
                         }
 
-                        // ================= UPDATE INVENTORY =================
-                        const updatePromises = items.map(item => {
-                            return new Promise((resolve, reject) => {
-                                db.query(
-                                    `UPDATE inventory 
-                                     SET stock_qty = stock_qty - ? 
-                                     WHERE branch_id = ? AND product_id = ?`,
-                                    [item.qty, branch_id, item.product_id],
-                                    (err) => err ? reject(err) : resolve()
-                                );
-                            });
-                        });
+                        const sale_id = saleResult.insertId;
 
-                        Promise.all(updatePromises)
-                            .then(() => {
+                        const finalItemValues = itemValues.map(item => [
+                            sale_id,
+                            ...item
+                        ]);
 
-                                // ================= CASH SESSION UPDATE =================
-                                db.query(`
-                                    UPDATE cash_sessions 
-                                    SET total_sales = total_sales + ?
-                                    WHERE branch_id = ? AND status = 'open'
-                                `, [total_amount, branch_id], (cashErr) => {
+                        const itemSql = `
+                            INSERT INTO sale_items
+                            (sale_id, product_id, qty, unit_price, cost_price, line_total, profit)
+                            VALUES ?
+                        `;
 
-                                    if (cashErr) {
-                                        console.error('Cash update error:', cashErr);
-                                        return db.rollback(() =>
-                                            res.status(500).json({ message: 'Cash update failed' })
-                                        );
-                                    }
-
-                                    // ================= COMMIT =================
-                                    db.commit(err => {
-                                        if (err) {
-                                            return db.rollback(() =>
-                                                res.status(500).json({ message: 'Commit failed' })
-                                            );
-                                        }
-
-                                        res.json({
-                                            message: 'Sale completed',
-                                            invoice_no,
-                                            total_amount
-                                        });
-                                    });
-
+                        db.query(itemSql, [finalItemValues], (err) => {
+                            if (err) {
+                                console.error('Sale item insert error:', err);
+                                return db.rollback(() => {
+                                    res.status(500).json({ message: 'Items insert failed' });
                                 });
+                            }
 
-                            })
-                            .catch(err => {
-                                console.error(err);
-                                db.rollback(() =>
-                                    res.status(500).json({ message: 'Inventory update failed' })
-                                );
+                            const inventoryUpdates = items.map(item => {
+                                return new Promise((resolve, reject) => {
+                                    const inventorySql = `
+                                        UPDATE inventory
+                                        SET stock_qty = stock_qty - ?
+                                        WHERE branch_id = ? AND product_id = ?
+                                    `;
+
+                                    db.query(
+                                        inventorySql,
+                                        [item.qty, branch_id, item.product_id],
+                                        (err, result) => {
+                                            if (err) return reject(err);
+
+                                            // If no inventory row exists, still allow sale but log it.
+                                            // Later we can make this stricter if needed.
+                                            if (result.affectedRows === 0) {
+                                                console.warn(
+                                                    `No inventory row found for branch ${branch_id}, product ${item.product_id}`
+                                                );
+                                            }
+
+                                            resolve();
+                                        }
+                                    );
+                                });
                             });
+
+                            Promise.all(inventoryUpdates)
+                                .then(() => {
+                                    // Update open cash session only for cash sales
+                                    if ((payment_method || 'cash').toLowerCase() === 'cash') {
+                                        const cashSql = `
+                                            UPDATE cash_sessions
+                                            SET total_sales = total_sales + ?
+                                            WHERE branch_id = ? AND status = 'open'
+                                        `;
+
+                                        db.query(cashSql, [total_amount, branch_id], (cashErr) => {
+                                            if (cashErr) {
+                                                console.error('Cash session update error:', cashErr);
+                                                return db.rollback(() => {
+                                                    res.status(500).json({
+                                                        message: 'Cash session update failed'
+                                                    });
+                                                });
+                                            }
+
+                                            db.commit(commitErr => {
+                                                if (commitErr) {
+                                                    console.error('Commit error:', commitErr);
+                                                    return db.rollback(() => {
+                                                        res.status(500).json({ message: 'Commit failed' });
+                                                    });
+                                                }
+
+                                                res.json({
+                                                    message: 'Sale completed',
+                                                    invoice_no,
+                                                    total_amount
+                                                });
+                                            });
+                                        });
+                                    } else {
+                                        db.commit(commitErr => {
+                                            if (commitErr) {
+                                                console.error('Commit error:', commitErr);
+                                                return db.rollback(() => {
+                                                    res.status(500).json({ message: 'Commit failed' });
+                                                });
+                                            }
+
+                                            res.json({
+                                                message: 'Sale completed',
+                                                invoice_no,
+                                                total_amount
+                                            });
+                                        });
+                                    }
+                                })
+                                .catch(err => {
+                                    console.error('Inventory update error:', err);
+                                    db.rollback(() => {
+                                        res.status(500).json({ message: 'Inventory update failed' });
+                                    });
+                                });
+                        });
                     }
                 );
             }
@@ -172,21 +241,57 @@ const getSalesReport = (req, res) => {
 
     db.query(sql, params, (err, results) => {
         if (err) {
-            console.error(err);
+            console.error('Sales report error:', err);
             return res.status(500).json({ message: 'Sales report failed' });
         }
 
-        const totalSales = results.reduce((sum, s) => sum + Number(s.total_amount), 0);
+        const totalSales = results.reduce(
+            (sum, sale) => sum + Number(sale.total_amount || 0),
+            0
+        );
 
         res.json({
             totalSales,
+            totalInvoices: results.length,
             totalRecords: results.length,
             sales: results
         });
     });
 };
 
+// ================= SALE ITEMS / INVOICE DETAILS =================
+const getSaleItems = (req, res) => {
+    const { id } = req.params;
+
+    const sql = `
+        SELECT 
+            sale_items.id,
+            sale_items.sale_id,
+            sale_items.product_id,
+            sale_items.qty,
+            sale_items.unit_price,
+            sale_items.cost_price,
+            sale_items.line_total,
+            sale_items.profit,
+            products.product_name
+        FROM sale_items
+        JOIN products ON sale_items.product_id = products.id
+        WHERE sale_items.sale_id = ?
+        ORDER BY sale_items.id ASC
+    `;
+
+    db.query(sql, [id], (err, results) => {
+        if (err) {
+            console.error('Sale items error:', err);
+            return res.status(500).json({ message: 'Sale items load failed' });
+        }
+
+        res.json(results);
+    });
+};
+
 module.exports = {
     createSale,
-    getSalesReport
+    getSalesReport,
+    getSaleItems
 };
